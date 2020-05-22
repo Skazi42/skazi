@@ -930,6 +930,26 @@ class Player final : public Creature, public Cylinder
 				client->sendCloseContainer(cid);
 			}
 		}
+		void sendRemoveRuleViolationReport(const std::string& name) const {
+			if (client) {
+				client->sendRemoveRuleViolationReport(name);
+			}
+		}
+		void sendRuleViolationCancel(const std::string& name) const {
+			if (client) {
+				client->sendRuleViolationCancel(name);
+			}
+		}
+		void sendLockRuleViolationReport() const {
+			if (client) {
+				client->sendLockRuleViolation();
+			}
+		}
+		void sendRuleViolationsChannel(uint16_t channelId) const {
+			if (client) {
+				client->sendRuleViolationsChannel(channelId);
+			}
+		}
 
 		void sendChannel(uint16_t channelId, const std::string& channelName) {
 			if (client) {

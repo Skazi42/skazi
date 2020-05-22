@@ -70,6 +70,21 @@ enum LightState_t {
 	LIGHT_STATE_SUNRISE,
 };
 
+struct RuleViolation {
+	RuleViolation() = default;
+	RuleViolation(uint32_t _reporterId, const std::string& _text) :
+		reporterId(_reporterId),
+		gamemasterId(0),
+		text(_text),
+		pending(true)
+	{}
+
+	uint32_t reporterId;
+	uint32_t gamemasterId;
+	std::string text;
+	bool pending;
+};
+
 static constexpr int32_t EVENT_LIGHTINTERVAL = 10000;
 static constexpr int32_t EVENT_DECAYINTERVAL = 250;
 static constexpr int32_t EVENT_DECAY_BUCKETS = 4;
@@ -385,7 +400,15 @@ class Game
 		void playerLeaveParty(uint32_t playerId);
 		void playerEnableSharedPartyExperience(uint32_t playerId, bool sharedExpActive);
 
+		void playerProcessRuleViolationReport(uint32_t playerId, const std::string& name);
+		void playerCloseRuleViolationReport(uint32_t playerId, const std::string& name);
+		void playerCancelRuleViolationReport(uint32_t playerId);
+		void playerReportRuleViolationReport(Player* player, const std::string& text);
+		void playerContinueRuleViolationReport(Player* player, const std::string& text);
 		void parsePlayerExtendedOpcode(uint32_t playerId, uint8_t opcode, const std::string& buffer);
+
+		void closeRuleViolationReport(Player* player);
+		void cancelRuleViolationReport(Player* player);
 
 		static void updatePremium(Account& account);
 
@@ -448,6 +471,7 @@ class Game
 		uint32_t getMotdNum() const { return motdNum; }
 		void incrementMotdNum() { motdNum++; }
 
+		const std::unordered_map<uint32_t, RuleViolation>& getRuleViolationReports() const { return ruleViolations; }
 		const std::unordered_map<uint32_t, Player*>& getPlayers() const { return players; }
 		const std::map<uint32_t, Npc*>& getNpcs() const { return npcs; }
 
@@ -492,6 +516,9 @@ class Game
 
 		void checkDecay();
 		void internalDecayItem(Item* item);
+
+		//list of reported rule violations, for correct channel listing
+		std::unordered_map<uint32_t, RuleViolation> ruleViolations;
 
 		std::unordered_map<uint32_t, Player*> players;
 		std::unordered_map<std::string, Player*> mappedPlayerNames;

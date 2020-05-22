@@ -434,6 +434,9 @@ void ProtocolGame::parsePacket(NetworkMessage& msg)
 		case 0x98: parseOpenChannel(msg); break;
 		case 0x99: parseCloseChannel(msg); break;
 		case 0x9A: parseOpenPrivateChannel(msg); break;
+		case 0x9B: parseProcessRuleViolationReport(msg); break;
+		case 0x9C: parseCloseRuleViolationReport(msg); break;
+		case 0x9D: addGameTask(&Game::playerCancelRuleViolationReport, player->getID()); break;
 		case 0x9E: addGameTask(&Game::playerCloseNpcChannel, player->getID()); break;
 		case 0xA0: parseFightModes(msg); break;
 		case 0xA1: parseAttack(msg); break;
@@ -822,25 +825,26 @@ void ProtocolGame::parseSay(NetworkMessage& msg)
 
 	SpeakClasses type = static_cast<SpeakClasses>(msg.getByte());
 	switch (type) {
-		case TALKTYPE_PRIVATE:
-		case TALKTYPE_PRIVATE_RED:
-			receiver = msg.getString();
-			channelId = 0;
-			break;
+	case TALKTYPE_PRIVATE:
+	case TALKTYPE_PRIVATE_RED:
+	case TALKTYPE_RVR_ANSWER:
+		receiver = msg.getString();
+		channelId = 0;
+		break;
 
-		case TALKTYPE_CHANNEL_Y:
-		case TALKTYPE_CHANNEL_R1:
-		case TALKTYPE_CHANNEL_R2:
-			channelId = msg.get<uint16_t>();
-			break;
+	case TALKTYPE_CHANNEL_Y:
+	case TALKTYPE_CHANNEL_R1:
+	case TALKTYPE_CHANNEL_R2:
+		channelId = msg.get<uint16_t>();
+		break;
 
-		default:
-			channelId = 0;
-			break;
+	default:
+		channelId = 0;
+		break;
 	}
 
 	const std::string text = msg.getString();
-	if (text.length() > 255) {
+	if (text.length() > 255 || text.find('\n') != std::string::npos) {
 		return;
 	}
 
@@ -877,6 +881,18 @@ void ProtocolGame::parseFollow(NetworkMessage& msg)
 	uint32_t creatureId = msg.get<uint32_t>();
 	// msg.get<uint32_t>(); creatureId (same as above)
 	addGameTask(&Game::playerFollowCreature, player->getID(), creatureId);
+}
+
+void ProtocolGame::parseProcessRuleViolationReport(NetworkMessage& msg)
+{
+	const std::string reporter = msg.getString();
+	addGameTask(&Game::playerProcessRuleViolationReport, player->getID(), reporter);
+}
+
+void ProtocolGame::parseCloseRuleViolationReport(NetworkMessage& msg)
+{
+	const std::string reporter = msg.getString();
+	addGameTask(&Game::playerCloseRuleViolationReport, player->getID(), reporter);
 }
 
 void ProtocolGame::parseTextWindow(NetworkMessage& msg)
@@ -1131,6 +1147,52 @@ void ProtocolGame::sendTutorial(uint8_t tutorialId)
 	NetworkMessage msg;
 	msg.addByte(0xDC);
 	msg.addByte(tutorialId);
+	writeToOutputBuffer(msg);
+}
+
+void ProtocolGame::sendRemoveRuleViolationReport(const std::string& name)
+{
+	NetworkMessage msg;
+	msg.addByte(0xAF);
+	msg.addString(name);
+	writeToOutputBuffer(msg);
+}
+
+void ProtocolGame::sendLockRuleViolation()
+{
+	NetworkMessage msg;
+	msg.addByte(0xB1);
+	writeToOutputBuffer(msg);
+}
+
+void ProtocolGame::sendRuleViolationCancel(const std::string& name)
+{
+	NetworkMessage msg;
+	msg.addByte(0xB0);
+	msg.addString(name);
+	writeToOutputBuffer(msg);
+}
+
+void ProtocolGame::sendRuleViolationsChannel(uint16_t channelId)
+{
+	NetworkMessage msg;
+	msg.addByte(0xAE);
+	msg.add<uint16_t>(channelId);
+	auto it = g_game.getRuleViolationReports().begin();
+	for (; it != g_game.getRuleViolationReports().end(); ++it) {
+		const RuleViolation& rvr = it->second;
+		if (rvr.pending) {
+			Player* reporter = g_game.getPlayerByID(rvr.reporterId);
+			if (reporter) {
+				msg.addByte(0xAA);
+				msg.add<uint32_t>(0);
+				msg.addString(reporter->getName());
+				msg.addByte(TALKTYPE_RVR_CHANNEL);
+				msg.add<uint32_t>(0);
+				msg.addString(rvr.text);
+			}
+		}
+	}
 	writeToOutputBuffer(msg);
 }
 
@@ -1471,13 +1533,22 @@ void ProtocolGame::sendCreatureSay(const Creature* creature, SpeakClasses type, 
 	msg.addByte(0xAA);
 	msg.add<uint32_t>(0x00);
 
-	msg.addString(creature->getName());
+	if (type != TALKTYPE_RVR_ANSWER) {
+		if (type != TALKTYPE_CHANNEL_R2) {
+			if (creature) {
 
-	//Add level only for players
-	if (const Player* speaker = creature->getPlayer()) {
-		msg.add<uint16_t>(speaker->getLevel());
-	} else {
-		msg.add<uint16_t>(0x00);
+				msg.addString(creature->getName());
+
+				//Add level only for players
+				if (const Player* speaker = creature->getPlayer()) {
+					msg.add<uint16_t>(speaker->getLevel());
+				}
+			} else {
+				msg.add<uint16_t>(0x00);
+			}
+		} else {
+			msg.add<uint16_t>(0x00);
+		}
 	}
 
 	msg.addByte(type);
@@ -1501,16 +1572,20 @@ void ProtocolGame::sendToChannel(const Creature* creature, SpeakClasses type, co
 	msg.addByte(0xAA);
 	msg.add<uint32_t>(0x00);
 
-	if (type == TALKTYPE_CHANNEL_R2) {
-		msg.addString("");
-		type = TALKTYPE_CHANNEL_R1;
+	if (type != TALKTYPE_RVR_ANSWER) {
+		if (!creature) {
+			msg.add<uint32_t>(0x00);
+		} else if (type == TALKTYPE_CHANNEL_R2) {
+			msg.addString("");
+			type = TALKTYPE_CHANNEL_R1;
 	} else {
-		msg.addString(creature->getName());
-		//Add level only for players
-		if (const Player* speaker = creature->getPlayer()) {
-			msg.add<uint16_t>(speaker->getLevel());
+			msg.addString(creature->getName());
+			//Add level only for players
+			if (const Player* speaker = creature->getPlayer()) {
+				msg.add<uint16_t>(speaker->getLevel());
 		} else {
-			msg.add<uint16_t>(0x00);
+				msg.add<uint16_t>(0x00);
+			}
 		}
 	}
 
@@ -1526,12 +1601,18 @@ void ProtocolGame::sendPrivateMessage(const Player* speaker, SpeakClasses type, 
 	msg.addByte(0xAA);
 	static uint32_t statementId = 0;
 	msg.add<uint32_t>(++statementId);
-	if (speaker) {
-		msg.addString(speaker->getName());
-		msg.add<uint16_t>(speaker->getLevel());
+	if (type == TALKTYPE_RVR_ANSWER) {
+		msg.addString("Gamemaster");
 	} else {
-		msg.add<uint32_t>(0x00);
+		if (speaker) {
+			msg.addString(speaker->getName());
+			msg.add<uint16_t>(speaker->getLevel());
+		}
+		else {
+			msg.add<uint32_t>(0x00);
+		}
 	}
+
 	msg.addByte(type);
 	msg.addString(text);
 	writeToOutputBuffer(msg);
